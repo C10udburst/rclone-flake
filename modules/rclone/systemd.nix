@@ -46,11 +46,22 @@ let
         GEN_CONF="/etc/rclone/rclone-generated.conf"
         TARGET_CONF="/run/rclone-${name}/rclone.conf"
 
+        mkdir -p "${m.mountPoint}"
+        ${optionalString m.union.enable ''mkdir -p "${m.union.localWriteDir}"''}
+
         : > "$TARGET_CONF"
 
         # 1. Safely append global or mount-specific config file (e.g. Agenix secret)
         if [ -n "$BASE_CONF" ] && [ -f "$BASE_CONF" ]; then
           cat "$BASE_CONF" >> "$TARGET_CONF"
+        elif [ -z "$BASE_CONF" ]; then
+          if [ -f "/var/lib/rclone/rclone.conf" ]; then
+            cat "/var/lib/rclone/rclone.conf" >> "$TARGET_CONF"
+          elif [ -f "/root/.config/rclone/rclone.conf" ]; then
+            cat "/root/.config/rclone/rclone.conf" >> "$TARGET_CONF"
+          elif [ -f "/etc/rclone/rclone.conf" ]; then
+            cat "/etc/rclone/rclone.conf" >> "$TARGET_CONF"
+          fi
         fi
 
         # 2. Append internal generated declarative remotes (unions)
@@ -58,7 +69,18 @@ let
           cat "$GEN_CONF" >> "$TARGET_CONF"
         fi
 
+        chown ${m.user}:${m.group} "$TARGET_CONF" || true
         chmod 600 "$TARGET_CONF"
+      '';
+
+      stopMountScript = pkgs.writeShellScript "stop-rclone-${name}" ''
+        if [ -x /run/wrappers/bin/fusermount3 ]; then
+          /run/wrappers/bin/fusermount3 -u -z "${m.mountPoint}" || true
+        elif command -v fusermount3 >/dev/null 2>&1; then
+          fusermount3 -u -z "${m.mountPoint}" || true
+        else
+          ${pkgs.coreutils}/bin/umount -l "${m.mountPoint}" || true
+        fi
       '';
 
     in
@@ -76,10 +98,7 @@ let
         "/run/wrappers"
       ];
 
-      environment = {
-        PATH = "/run/wrappers/bin:/run/current-system/sw/bin";
-      }
-      // m.environment;
+      environment = m.environment;
 
       serviceConfig = {
         Type = "notify";
@@ -101,7 +120,7 @@ let
           ++ optional (m.environmentFile != null) m.environmentFile;
 
         ExecStartPre = [
-          "${prepareConfigScript}"
+          "+${prepareConfigScript}"
         ];
 
         ExecStart = ''
@@ -110,7 +129,7 @@ let
             ${escapeShellArgs mountFlags}
         '';
 
-        ExecStop = "${pkgs.coreutils}/bin/umount ${m.mountPoint}";
+        ExecStop = "${stopMountScript}";
       };
     };
 
@@ -122,7 +141,10 @@ in
 
     # 2. Ensure mount points and local union write layers exist before mounting
     systemd.tmpfiles.rules = flatten (
-      mapAttrsToList (
+      [
+        "d /var/lib/rclone 0750 root root -"
+      ]
+      ++ mapAttrsToList (
         name: m:
         [
           "d ${m.mountPoint} 0755 ${m.user} ${m.group} -"

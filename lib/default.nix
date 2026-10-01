@@ -72,7 +72,10 @@ in
     name: unionCfg:
     let
       sectionName = "${name}-union";
-      upstreams = "${unionCfg.localWriteDir}:${unionCfg.localPolicy} ${unionCfg.remote}:${unionCfg.remotePolicy}";
+      quoteIfNeeded = s: if lib.hasInfix " " s then ''"${s}"'' else s;
+      localUpstream = quoteIfNeeded "${unionCfg.localWriteDir}:${unionCfg.localPolicy}";
+      remoteUpstream = quoteIfNeeded "${unionCfg.remote}:${unionCfg.remotePolicy}";
+      upstreams = "${localUpstream} ${remoteUpstream}";
 
       attrs = {
         type = "union";
